@@ -1,0 +1,6 @@
+.env
+.git
+node_modules
+__pycache__
+*.py[cod]
+npm-debug.log*

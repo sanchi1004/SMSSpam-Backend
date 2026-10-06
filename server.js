@@ -4,19 +4,57 @@ const rateLimit = require('express-rate-limit');
 const { connectToDb, getDb } = require('./db');
 const requireApiKey = require('./middleware/auth');
 const requirePublishKey = require('./middleware/publishAuth');
+const ModelPredictor = require('./modelPredictor');
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json({ limit: '64kb' }));
 
-connectToDb().then(() => {
+const modelPredictor = new ModelPredictor();
+
+connectToDb().then(async () => {
+  await modelPredictor.start();
   app.listen(process.env.PORT || 3000, () => {
     console.log(`Server running on port ${process.env.PORT || 3000}`);
   });
+}).catch((error) => {
+  console.error('Backend startup failed:', error.message);
+  process.exit(1);
 });
 
 // Unauthenticated liveness check, useful for uptime monitors and the retrain pipeline
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+
+/**
+ * POST /api/model/predict
+ * Runs the same hashed-feature TFLite classifier used by the Android app. Message text is
+ * processed in memory only; it is never logged or written to MongoDB.
+ */
+const predictLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+app.post('/api/model/predict', predictLimiter, requireApiKey, async (req, res) => {
+  const { text } = req.body || {};
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return res.status(400).json({ error: 'text must be a non-empty string' });
+  }
+  if (text.length > 5000) {
+    return res.status(413).json({ error: 'text must be 5000 characters or fewer' });
+  }
+
+  try {
+    const result = await modelPredictor.predict(text);
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Model prediction failed:', error.message);
+    return res.status(503).json({ error: 'Model is temporarily unavailable' });
+  }
+});
 
 const SHA256_HEX = /^[a-f0-9]{64}$/i;
 
